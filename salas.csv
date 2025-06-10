@@ -1,0 +1,4 @@
+id_sala,capacidade,dias_funcionamento,turnos_disponiveis
+1,4,"seg,ter,qua,qui,sex,sab","manhã,tarde"
+2,3,"seg,ter,qua,qui,sex","manhã,tarde"
+3,3,"seg,ter,qua,qui,sex,sab",manhã 

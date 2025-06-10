@@ -1,0 +1,67 @@
+RELATÓRIO FINAL DO PROJETO "CUIDAR BEM" - OTIMIZAÇÃO DO ESCALONAMENTO DE ATENDIMENTOS
+
+1. INTRODUÇÃO
+Este relatório resume o desenvolvimento de modelos de Programação Linear para otimizar o agendamento de atendimentos psicológicos no projeto "Cuidar Bem". O objetivo é maximizar atendimentos de forma eficiente e justa, utilizando os recursos disponíveis (psicólogos e salas).
+
+2. DADOS DO PROJETO
+Os modelos utilizam dados de três arquivos CSV:
+- `profissionais.csv`: Detalhes sobre os psicólogos (ID, nome, especialidade, carga horária, disponibilidade).
+- `salas.csv`: Informações sobre as salas (ID, capacidade, dias/turnos de funcionamento).
+- `demandas.csv`: Demanda prevista de atendimentos por data, dia, turno e tipo (triagem, rotina, urgência).
+
+Para visualizar esses dados, foram gerados gráficos como:
+- `apres_demanda_prevista.png` (demanda ao longo da semana)
+- `apres_carga_profissionais.png` (carga horária máxima dos profissionais)
+- `apres_capacidade_salas.png` (capacidade das salas por dia/turno)
+- `apres_disponibilidade_profissionais.png` (disponibilidade dos profissionais).
+
+3. MODELO 1: AGENDAMENTO BÁSICO (`agendamento_psicologico.py`)
+
+Objetivo: Maximizar o número total de atendimentos.
+
+Principais Restrições:
+- **Disponibilidade do Profissional:** Um psicólogo atende em apenas uma sala por turno, nos seus dias/turnos disponíveis.
+- **Disponibilidade da Sala:** Uma sala é usada por apenas um profissional por turno, nos seus dias/turnos de funcionamento.
+- **Demanda Prevista:** O total de atendimentos não excede a demanda prevista para o período.
+- **Balanceamento de Salas:** Limita o número de atendimentos por sala para distribuir a carga (média + 20%).
+
+Resultados do Modelo 1:
+- Status: Ótima (Optimal)
+- Total de Atendimentos: 40
+- Distribuição equilibrada:
+    - Profissionais: Ana Souza (13), Carla Dias (13), Luana Silva (14)
+    - Salas: Sala 1 (12), Sala 2 (14), Sala 3 (14)
+    - Turnos: Manhã (20), Tarde (20)
+
+4. MODELO 2: ESCALONAMENTO AVANÇADO (`modelo_escalonamento.py`)
+
+Objetivo: Minimizar um "custo" total, que inclui penalidades por:
+- Demanda não atendida (folga), com alta prioridade para urgências.
+- Desequilíbrio na carga de trabalho dos profissionais.
+- Ao mesmo tempo, ele incentiva o agendamento de atendimentos (benefício).
+
+Principais Restrições:
+- **Atender Demanda (com folga):** Tenta atender toda a demanda prevista, registrando o que não foi possível como "folga".
+- **Disponibilidade Profissional:** Respeita a agenda do profissional.
+- **Carga Horária Máxima e Equilíbrio:** Limita a carga horária e busca equilibrar a atividade entre os profissionais.
+- **Capacidade das Salas:** O total de atendimentos por sala não excede sua capacidade.
+
+Resultados do Modelo 2:
+- Status: Ótima (Optimal)
+- Custo Total (Minimizado): 295.9 (demonstra que o modelo está agendando atendimentos de alta prioridade e minimizando penalidades)
+- Total de Atendimentos Agendados: 82 (de uma demanda total de 107)
+- Demandas Não Atendidas (Folga): 25 (identificadas especificamente onde a capacidade não foi suficiente ou prioridades direcionaram recursos).
+
+5. DEPENDÊNCIAS DO PROJETO
+Para executar os códigos Python, as seguintes bibliotecas devem ser instaladas:
+- `pulp==2.7.0`
+- `pandas==2.2.0`
+
+Para instalar: `pip install -r requirements.txt`
+
+6. COMO EXECUTAR OS MODELOS
+- Para o Modelo 1 (`agendamento_psicologico.py`): `python agendamento_psicologico.py`
+- Para o Modelo 2 (`modelo_escalonamento.py`): `python modelo_escalonamento.py`
+
+7. CONCLUSÃO
+Os modelos de Programação Linear são ferramentas poderosas para otimizar o agendamento, promovendo eficiência operacional e justiça na alocação de recursos. O Modelo 2, mais avançado, fornece insights valiosos sobre a capacidade real do sistema e onde os gargalos podem ocorrer, permitindo decisões estratégicas para o projeto "Cuidar Bem". 

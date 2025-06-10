@@ -1,0 +1,6 @@
+id_profissional,nome,especialidade,carga_horaria_max,disponibilidade_seg,disponibilidade_ter,disponibilidade_qua,disponibilidade_qui,disponibilidade_sex,disponibilidade_sab
+1,Ana Souza,Psicólogo,30,"manhã,tarde",manhã,tarde,"manhã,tarde",manhã,manhã
+2,João Lima,Estagiário,28,tarde,"manhã,tarde",manhã,tarde,"manhã,tarde",
+3,Carla Dias,Psicólogo,32,manhã,manhã,"manhã,tarde",manhã,manhã,"manhã,tarde"
+4,Pedro Alves,Assistente,24,tarde,tarde,,tarde,tarde,
+5,Luana Silva,Psicólogo,30,"manhã,tarde",manhã,manhã,"manhã,tarde",manhã,manhã 
