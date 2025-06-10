@@ -1,153 +1,245 @@
-from pulp import *
 import pandas as pd
+from pulp import *
 
-# Carregar dados dos arquivos CSV
-profissionais_df = pd.read_csv('profissionais.csv')
-salas_df = pd.read_csv('salas.csv')
-demandas_df = pd.read_csv('demandas.csv')
+# Carregar os dados de profissionais, salas e demandas a partir de arquivos CSV.
+# Estes dados são a base para a formulação do problema de otimização.
+profissionais = pd.read_csv('profissionais.csv')
+salas = pd.read_csv('salas.csv')
+demandas = pd.read_csv('demandas.csv')
 
-# Duração padrão de um atendimento em horas
-duracao_atendimento = 1
+# Definir os dias da semana e turnos de operação que são considerados no agendamento.
+dias = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab']
+turnos = ['manhã', 'tarde']
 
-# Número máximo de atendimentos que um profissional pode realizar em um único turno
-MAX_ATENDIMENTOS_POR_TURNO_PROF = 4
+# Definir a duração padrão de cada atendimento em horas. Este valor é crucial para
+# o cálculo da carga horária e utilização das salas.
+duracao_atendimento = 1  # 1 hora por atendimento
 
-# Pesos de prioridade para tipos de atendimento (ajustados para dar mais ênfase às prioridades)
+# Definir pesos para diferentes tipos de atendimento. Estes pesos são utilizados
+# na função objetivo para priorizar atendimentos mais urgentes ou importantes.
 pesos = {'urgência': 5, 'triagem': 3, 'rotina': 1}
 
-# Criar o problema
+# Pré-processamento das disponibilidades dos profissionais.
+# A coluna de disponibilidade em cada dia é convertida de uma string para uma lista
+# de turnos, facilitando o acesso e a validação no modelo.
+for dia in dias:
+    col = f'disponibilidade_{dia}'
+    profissionais[col] = profissionais[col].fillna('').apply(lambda x: [t.strip() for t in str(x).split(',') if t.strip()])
+
+# Criar o problema de Programação Linear. Definido como um problema de maximização
+# (`LpMaximize`), pois o objetivo principal é maximizar o valor total dos atendimentos.
 prob = LpProblem("Agendamento_Psicologico", LpMaximize)
 
-# Dados do problema
-psicologos = profissionais_df[profissionais_df['especialidade'] == 'Psicólogo']['id_profissional'].tolist()
-datas_unicas = demandas_df['data'].unique().tolist()
-turnos = ['manhã', 'tarde']
-salas = salas_df['id_sala'].tolist()
+# =============================================================================
+# Variáveis de Decisão
+# =============================================================================
 
-# Variáveis de decisão
-x = LpVariable.dicts("atendimento",
-                     ((p, data, t, ta) for p in psicologos 
-                      for data in datas_unicas
-                      for t in turnos
-                      for ta in demandas_df['tipo_atendimento'].unique()),
-                     lowBound=0, cat='Integer')
+# Variável binária `x[(p, d, t, s, tipo_atendimento)]`:
+# Representa se um profissional `p` está agendado para um atendimento do tipo
+# `tipo_atendimento` em uma data `d`, turno `t`, na sala `s`.
+# Valor 1: o agendamento ocorre; Valor 0: não ocorre.
+x = LpVariable.dicts("x", 
+                      [(p, d, t, s, tipo_atendimento) 
+                       for p in profissionais['id_profissional'] 
+                       for d in demandas['data'] 
+                       for t in turnos 
+                       for s in salas['id_sala'] 
+                       for tipo_atendimento in demandas['tipo_atendimento'].unique()], 
+                      0, 1, LpBinary)
 
-# Variável de decisão para atendimentos realizados
-atendimento_realizado = LpVariable.dicts(
-    "AtendimentoRealizado",
-    ((row['data'], row['turno'], row['tipo_atendimento'])
-     for _, row in demandas_df.iterrows()),
-    lowBound=0, cat='Integer'
-)
+# Variável contínua `folga[(data, turno, tipo_atendimento)]`:
+# Indica a quantidade de demandas de um `tipo_atendimento` específico em uma
+# `data` e `turno` que não puderam ser atendidas. Essencial para quantificar
+# a demanda reprimida e aplicar penalidades na função objetivo.
+folga = LpVariable.dicts("folga", 
+                           [(d, t, tipo) 
+                            for d in demandas['data'] 
+                            for t in turnos 
+                            for tipo in demandas['tipo_atendimento'].unique()], 
+                           0, None, LpContinuous)
 
-# Nova variável para controlar o desbalanceamento da carga horária
-desbalanceamento = LpVariable("Desbalanceamento", lowBound=0)
+# Variável contínua `desbalanceamento[p]`:
+# Mede o desvio absoluto da carga horária de um profissional `p` em relação à
+# carga horária média esperada de todos os profissionais. Utilizada para penalizar
+# desequilíbrios na distribuição de trabalho na função objetivo.
+desbalanceamento = LpVariable.dicts("desbalanceamento", 
+                                      [p for p in profissionais['id_profissional']], 
+                                      0, None, LpContinuous)
 
-# Função objetivo: Maximizar a soma ponderada dos atendimentos realizados e minimizar o desbalanceamento
-prob += lpSum(atendimento_realizado[(row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
-              for _, row in demandas_df.iterrows()) - 10 * desbalanceamento
+# =============================================================================
+# Função Objetivo
+# =============================================================================
 
-# Restrição 1: Cada profissional só pode atender em no máximo um tipo de atendimento por turno
-for p in psicologos:
-    for data in datas_unicas:
+# A função objetivo busca MAXIMIZAR o benefício total dos atendimentos agendados
+# e MINIMIZAR as penalidades associadas às demandas não atendidas (folga) e ao
+# desequilíbrio da carga de trabalho dos profissionais.
+# Componente 1: Soma ponderada dos atendimentos alocados (benefício).
+# Componente 2: Penalidade por demandas não atendidas (folga), ponderada pelos `pesos`.
+# Componente 3: Penalidade pelo desbalanceamento da carga de trabalho dos profissionais.
+prob += lpSum(pesos[tipo_atendimento] * x[(p, d, t, s, tipo_atendimento)] * duracao_atendimento
+              for p, d, t, s, tipo_atendimento in x) \
+        - lpSum(pesos[tipo] * folga[(d, t, tipo)] for d, t, tipo in folga) \
+        - 0.1 * lpSum(desbalanceamento[p] for p in profissionais['id_profissional']),
+        "Total_de_Atendimentos_Ponderados_e_Balanceamento"
+
+# =============================================================================
+# Restrições
+# =============================================================================
+
+# Restrição 1: Um profissional só pode realizar um atendimento por turno específico.
+# Garante que cada psicólogo esteja agendado para, no máximo, um atendimento
+# por cada combinação de dia e turno, respeitando sua disponibilidade.
+for p in profissionais['id_profissional']:
+    for d in demandas['data']:
+        dia_semana = demandas[demandas['data'] == d]['dia_semana'].iloc[0]
         for t in turnos:
-            dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
-            disponibilidade_prof = profissionais_df[profissionais_df['id_profissional'] == p][f'disponibilidade_{dia_semana_atual}'].iloc[0]
-            if pd.isna(disponibilidade_prof) or t not in disponibilidade_prof.split(','):
-                for ta_inner in demandas_df['tipo_atendimento'].unique():
-                    prob += x[p, data, t, ta_inner] == 0, f"IndisponibilidadeProf_{p}_{data}_{t}_{ta_inner}"
-            else:
-                prob += lpSum(x[p, data, t, ta_inner] for ta_inner in demandas_df['tipo_atendimento'].unique()) <= MAX_ATENDIMENTOS_POR_TURNO_PROF, f"MaxAtendimentosTurno_{p}_{data}_{t}"
+            if t in profissionais[profissionais['id_profissional'] == p][f'disponibilidade_{dia_semana}'].iloc[0]:
+                prob += lpSum(x[(p, d, t, s, tipo)] 
+                              for s in salas['id_sala'] 
+                              for tipo in demandas['tipo_atendimento'].unique()) <= 1, \
+                          f"R1_Profissional_Um_Atendimento_Por_Turno_{p}_{d}_{t}"
 
-# Restrição 2: Capacidade total das salas por turno
-for data in datas_unicas:
-    for t in turnos:
-        dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
-        capacidade_total_salas = salas_df[salas_df['dias_funcionamento'].apply(lambda x: dia_semana_atual in x.split(',')) & 
-                                          salas_df['turnos_disponiveis'].apply(lambda x: t in x.split(','))]['capacidade'].sum()
-        
-        prob += lpSum(x[p, data, t, ta] 
-                      for p in psicologos 
-                      for ta in demandas_df['tipo_atendimento'].unique()) <= capacidade_total_salas, f"CapacidadeTotalSalas_{data}_{t}"
+# Restrição 2: Uma sala só pode ser usada por um profissional por turno.
+# Assegura que cada sala seja utilizada por, no máximo, um profissional em cada
+# combinação de dia e turno, conforme a disponibilidade da sala.
+for s in salas['id_sala']:
+    for d in demandas['data']:
+        dia_semana_sala = salas[salas['id_sala'] == s]['dias_funcionamento'].iloc[0]
+        for t in turnos:
+            # Verifica se a sala está disponível para o dia da semana e turno.
+            if pd.isna(dia_semana_sala) or (dia_semana in dia_semana_sala.split(',') and \
+                                            t in salas[salas['id_sala'] == s]['turnos_disponiveis'].iloc[0].split(',')):
+                prob += lpSum(x[(p, d, t, s, tipo)] 
+                              for p in profissionais['id_profissional'] 
+                              for tipo in demandas['tipo_atendimento'].unique()) <= 1, \
+                          f"R2_Sala_Exclusiva_Por_Turno_{s}_{d}_{t}"
 
-# Restrição 3: Respeitar a carga horária máxima de cada profissional
-for p in psicologos:
-    total_horas_prof = lpSum(x[p, data_inner_carga, t_inner_carga, ta_inner_carga] * duracao_atendimento
-                             for data_inner_carga in datas_unicas
-                             for t_inner_carga in turnos
-                             for ta_inner_carga in demandas_df['tipo_atendimento'].unique())
-    max_carga = profissionais_df[profissionais_df['id_profissional'] == p]['carga_horaria_max'].iloc[0]
-    prob += total_horas_prof <= max_carga, f"CargaHorariaMax_{p}"
+# Restrição 3: Atender a demanda prevista ou registrar folga.
+# Para cada combinação de data, turno e tipo de atendimento, a soma dos atendimentos
+# alocados (x) mais a quantidade de folga deve ser igual à demanda prevista.
+for index, row in demandas.iterrows():
+    data = row['data']
+    turno = row['turno']
+    tipo = row['tipo_atendimento']
+    quantidade_prevista = row['quantidade_prevista']
+    prob += lpSum(x[(p, data, turno, s, tipo)] 
+                  for p in profissionais['id_profissional'] 
+                  for s in salas['id_sala']) + folga[(data, turno, tipo)] == quantidade_prevista, \
+              f"R3_Atender_Demanda_ou_Folga_{data}_{turno}_{tipo}"
 
-# Nova restrição: Controlar o desbalanceamento da carga horária
-carga_media = lpSum(x[p, data, t, ta] * duracao_atendimento
-                    for p in psicologos
-                    for data in datas_unicas
-                    for t in turnos
-                    for ta in demandas_df['tipo_atendimento'].unique()) / len(psicologos)
+# Restrição 4: Capacidade máxima da sala por turno.
+# Garante que o número total de atendimentos agendados em uma sala não exceda
+# sua capacidade máxima para aquele turno específico. Cada atendimento ocupa `duracao_atendimento`.
+for s in salas['id_sala']:
+    capacidade_sala = salas[salas['id_sala'] == s]['capacidade'].iloc[0]
+    for d in demandas['data']:
+        dia_semana_sala = salas[salas['id_sala'] == s]['dias_funcionamento'].iloc[0]
+        for t in turnos:
+            # Verifica se a sala está disponível para o dia da semana e turno.
+            if pd.isna(dia_semana_sala) or (dia_semana in dia_semana_sala.split(',') and \
+                                            t in salas[salas['id_sala'] == s]['turnos_disponiveis'].iloc[0].split(',')):
+                prob += lpSum(x[(p, d, t, s, tipo)] * duracao_atendimento
+                              for p in profissionais['id_profissional'] 
+                              for tipo in demandas['tipo_atendimento'].unique()) <= capacidade_sala, \
+                          f"R4_Capacidade_Sala_Por_Turno_{s}_{d}_{t}"
 
-for p in psicologos:
-    total_horas_prof = lpSum(x[p, data, t, ta] * duracao_atendimento
-                            for data in datas_unicas
-                            for t in turnos
-                            for ta in demandas_df['tipo_atendimento'].unique())
-    prob += total_horas_prof - carga_media <= desbalanceamento, f"DesbalanceamentoPos_{p}"
-    prob += carga_media - total_horas_prof <= desbalanceamento, f"DesbalanceamentoNeg_{p}"
+# Restrição 5: Carga horária máxima dos profissionais e balanceamento.
+# Assegura que a carga horária total de cada profissional não exceda seu limite máximo.
+# Além disso, define o `desbalanceamento[p_id]` como a diferença absoluta entre
+# a carga horária do profissional `p_id` e a média esperada.
+for p_id in profissionais['id_profissional']:
+    carga_horaria_max = profissionais[profissionais['id_profissional'] == p_id]['carga_horaria_max'].iloc[0]
+    # Calcula o total de horas agendadas para o profissional p_id.
+    total_horas_p = lpSum(x[(p_id, d, t, s, tipo)] * duracao_atendimento 
+                          for d in demandas['data'] 
+                          for t in turnos 
+                          for s in salas['id_sala'] 
+                          for tipo in demandas['tipo_atendimento'].unique()
+                          if (p_id, d, t, s, tipo) in x) # Garante que a chave existe no dicionário x
+    prob += total_horas_p <= carga_horaria_max, f"R5_Carga_Horaria_Max_{p_id}"
+    
+    # Calculamos a média aproximada da carga horária esperada para todos os profissionais.
+    # Esta média serve como um alvo para o balanceamento da carga de trabalho.
+    media_carga_esperada = (sum(profissionais['carga_horaria_max']) * duracao_atendimento) / len(profissionais['id_profissional'])
+    
+    # Restrições para o desbalanceamento: modelam o valor absoluto.
+    # `desbalanceamento[p_id]` deve ser maior ou igual à diferença positiva
+    # e à diferença negativa entre `total_horas_p` e `media_carga_esperada`.
+    prob += total_horas_p - media_carga_esperada <= desbalanceamento[p_id], f"R5_Desbalanceamento_Positivo_{p_id}"
+    prob += media_carga_esperada - total_horas_p <= desbalanceamento[p_id], f"R5_Desbalanceamento_Negativo_{p_id}"
 
-# Restrição 4: atendimento_realizado não pode exceder a quantidade prevista da demanda
-for _, demanda_row in demandas_df.iterrows():
-    data_demanda = demanda_row['data']
-    turno_demanda = demanda_row['turno']
-    tipo_atendimento_demanda = demanda_row['tipo_atendimento']
-    quantidade_prevista_demanda = demanda_row['quantidade_prevista']
+# =============================================================================
+# Resolução do Problema
+# =============================================================================
 
-    prob += atendimento_realizado[(data_demanda, turno_demanda, tipo_atendimento_demanda)] <= quantidade_prevista_demanda
+# Escreve o problema de Programação Linear em um arquivo no formato .lp.
+# Isso é útil para depuração e para visualizar a estrutura do modelo.
+prob.writeLP("agendamento_psicologico.lp")
 
-    prob += lpSum(x[(p, data_demanda, turno_demanda, tipo_atendimento_demanda)]
-                  for p in psicologos) == atendimento_realizado[(data_demanda, turno_demanda, tipo_atendimento_demanda)]
-
-# Resolver o problema
+# Resolve o problema usando o solver padrão (geralmente CBC, se disponível).
+# O solver encontra os valores ótimos para as variáveis de decisão que satisfazem
+# todas as restrições e otimizam a função objetivo.
 prob.solve()
 
-# Imprimir resultados
-print(f"Status: {LpStatus[prob.status]}")
-print(f"Total de atendimentos ponderados: {value(prob.objective)}")
+# Exibe o status da solução encontrada pelo solver (Optimal, Infeasible, Unbounded, etc.).
+print("Status:", LpStatus[prob.status])
 
-# Imprimir agendamento
-print("\nAgendamento:")
-for p in psicologos:
-    for data in datas_unicas:
-        for t in turnos:
-            for ta in demandas_df['tipo_atendimento'].unique():
-                if value(x[p, data, t, ta]) == 1:
-                    nome_prof = profissionais_df[profissionais_df['id_profissional'] == p]['nome'].iloc[0]
-                    print(f"Profissional {nome_prof} (ID: {p}) atenderá no {data} à {t} - Tipo: {ta}")
+# =============================================================================
+# Apresentação dos Resultados
+# =============================================================================
 
-# Imprimir estatísticas de atendimentos por tipo de atendimento
-print("\nEstatísticas por Tipo de Atendimento (Demanda Atendida):")
-for (data, turno, tipo), quantidade in atendimento_realizado.items():
-    if value(quantidade) > 0:
-        print(f"  Data: {data}, Turno: {turno}, Tipo: {tipo}, Atendimentos: {value(quantidade)}")
+print("\n--- Resultados do Agendamento Psicológico ---")
 
-# Imprimir estatísticas por profissional (carga horária)
-print("\nCarga horária por Profissional:")
-for p in psicologos:
-    total_horas_prof = sum(value(x[p, data, t, ta]) * duracao_atendimento
-                           for data in datas_unicas
-                           for t in turnos
-                           for ta in demandas_df['tipo_atendimento'].unique())
-    nome_prof = profissionais_df[profissionais_df['id_profissional'] == p]['nome'].iloc[0]
-    print(f"  Profissional {nome_prof} (ID: {p}): {total_horas_prof} horas")
+# Calcula e imprime o total de atendimentos ponderados atendidos.
+# Percorre todas as variáveis de decisão `x` e soma os valores dos atendimentos
+# que foram agendados, multiplicando-os pelos seus respectivos pesos.
+total_atendimentos_ponderados = 0
+for p, d, t, s, tipo_atendimento in x:
+    if x[(p, d, t, s, tipo_atendimento)].varValue is not None and x[(p, d, t, s, tipo_atendimento)].varValue > 0:
+        total_atendimentos_ponderados += pesos[tipo_atendimento] * duracao_atendimento
 
-# Imprimir estatísticas por sala
-print("\nCapacidade de Salas Utilizada (por Data e Turno):")
-for data in datas_unicas:
+print(f"Total de atendimentos ponderados: {total_atendimentos_ponderados}")
+
+# Detalha a carga de trabalho de cada profissional.
+# Soma as horas de atendimento alocadas para cada profissional.
+carga_trabalho_profissionais = {p_id: 0 for p_id in profissionais['id_profissional']}
+for p, d, t, s, tipo_atendimento in x:
+    if x[(p, d, t, s, tipo_atendimento)].varValue is not None and x[(p, d, t, s, tipo_atendimento)].varValue > 0:
+        carga_trabalho_profissionais[p] += duracao_atendimento
+
+print("\nCarga horária dos profissionais:")
+for p_id, carga in carga_trabalho_profissionais.items():
+    print(f"  Profissional {p_id}: {carga} horas")
+
+# Detalha a utilização da capacidade das salas por data, turno e sala.
+# Calcula a ocupação de cada sala e compara com sua capacidade máxima.
+capacidade_salas_ocupada = {}
+for d in demandas['data']:
     for t in turnos:
-        dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
-        capacidade_total_salas = salas_df[salas_df['dias_funcionamento'].apply(lambda x: dia_semana_atual in x.split(',')) & 
-                                          salas_df['turnos_disponiveis'].apply(lambda x: t in x.split(','))]['capacidade'].sum()
-        
-        atendimentos_neste_slot = sum(value(x[p, data, t, ta]) 
-                                     for p in psicologos 
-                                     for ta in demandas_df['tipo_atendimento'].unique())
-        print(f"  {data} {t}: Capacidade Total de Salas = {capacidade_total_salas}, Atendimentos Alocados = {atendimentos_neste_slot}") 
+        for s in salas['id_sala']:
+            # Soma os valores de x para calcular a ocupação de uma sala em um dado turno.
+            ocupacao = sum(x[(p, d, t, s, tipo)].varValue for p in profissionais['id_profissional'] for tipo in demandas['tipo_atendimento'].unique() if (p, d, t, s, tipo) in x and x[(p, d, t, s, tipo)].varValue is not None)
+            if ocupacao is not None and ocupacao > 0:
+                capacidade_salas_ocupada[(d, t, s)] = ocupacao
+
+print("\nUtilização da capacidade das salas:")
+for (data, turno, sala), ocupacao in capacidade_salas_ocupada.items():
+    capacidade_max = salas[salas['id_sala'] == sala]['capacidade'].iloc[0]
+    print(f"  Data: {data}, Turno: {turno}, Sala: {sala}, Ocupação: {ocupacao:.0f}/{capacidade_max:.0f}")
+
+# Detalha as demandas não atendidas (folga).
+# Exibe a quantidade de cada tipo de demanda que não pôde ser agendada.
+print("\nDemandas não atendidas (folga):")
+folga_total = 0
+for d, t, tipo in folga:
+    if folga[(d, t, tipo)].varValue is not None and folga[(d, t, tipo)].varValue > 0:
+        print(f"  Data: {d}, Turno: {t}, Tipo: {tipo}, Quantidade: {folga[(d, t, tipo)].varValue:.0f}")
+        folga_total += folga[(d, t, tipo)].varValue
+
+if folga_total == 0:
+    print("  Todas as demandas foram atendidas.")
+
+# Imprime o valor final da função objetivo. Este valor reflete o custo total
+# minimizado, considerando os atendimentos agendados, as penalidades por folga
+# e as penalidades por desbalanceamento de carga.
+print(f"\nCusto Total do Objetivo (com penalidade de desbalanceamento): {prob.objective.value():.2f}") 

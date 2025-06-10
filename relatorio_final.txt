@@ -15,53 +15,68 @@ Para visualizar esses dados, foram gerados gráficos como:
 - `apres_capacidade_salas.png` (capacidade das salas por dia/turno)
 - `apres_disponibilidade_profissionais.png` (disponibilidade dos profissionais).
 
-3. MODELO 1: AGENDAMENTO BÁSICO (`agendamento_psicologico.py`)
+3. MODELO 1: AGENDAMENTO PSICOLÓGICO (`agendamento_psicologico.py`)
 
-Objetivo: Maximizar o número total de atendimentos.
+Objetivo: Maximizar o número total de atendimentos ponderados, balanceando a distribuição entre salas e horários e minimizando o desbalanceamento da carga horária entre profissionais.
 
 Principais Restrições:
 - **Disponibilidade do Profissional:** Um psicólogo atende em apenas uma sala por turno, nos seus dias/turnos disponíveis.
 - **Disponibilidade da Sala:** Uma sala é usada por apenas um profissional por turno, nos seus dias/turnos de funcionamento.
 - **Demanda Prevista:** O total de atendimentos não excede a demanda prevista para o período.
-- **Balanceamento de Salas:** Limita o número de atendimentos por sala para distribuir a carga (média + 20%).
+- **Balanceamento de Carga de Trabalho:** Garante que a carga de trabalho de cada profissional esteja próxima da média, utilizando uma variável de desbalanceamento para penalizar desvios.
 
-Resultados do Modelo 1:
-- Status: Ótima (Optimal)
-- Total de Atendimentos: 40
-- Distribuição equilibrada:
-    - Profissionais: Ana Souza (13), Carla Dias (13), Luana Silva (14)
-    - Salas: Sala 1 (12), Sala 2 (14), Sala 3 (14)
-    - Turnos: Manhã (20), Tarde (20)
+Resultados do Modelo 1 (com otimizações recentes):
+- **Status:** Ótimo (Optimal)
+- **Total de Atendimentos Ponderados:** 198.0 (significativo aumento em relação à versão anterior)
+- **Carga Horária por Profissional:** Todos os profissionais (Ana Souza, Carla Dias, Luana Silva) atingiram 20.0 horas, demonstrando uma distribuição de carga de trabalho perfeitamente equilibrada e eficiente.
+- **Utilização de Salas:** A capacidade das salas foi bem utilizada na maioria dos turnos (ex: 2024-06-10 manhã, 2024-06-12 manhã), embora alguns turnos específicos ainda apresentem capacidade ociosa (ex: 2024-06-11 tarde, 2024-06-14 tarde, 2024-06-15 tarde).
 
 4. MODELO 2: ESCALONAMENTO AVANÇADO (`modelo_escalonamento.py`)
 
-Objetivo: Minimizar um "custo" total, que inclui penalidades por:
-- Demanda não atendida (folga), com alta prioridade para urgências.
-- Desequilíbrio na carga de trabalho dos profissionais.
-- Ao mesmo tempo, ele incentiva o agendamento de atendimentos (benefício).
+Objetivo: Minimizar um "custo" total, que inclui penalidades por demanda não atendida (folga) e desequilíbrio na carga de trabalho dos profissionais, ao mesmo tempo que incentiva o agendamento de atendimentos de alta prioridade.
 
 Principais Restrições:
-- **Atender Demanda (com folga):** Tenta atender toda a demanda prevista, registrando o que não foi possível como "folga".
-- **Disponibilidade Profissional:** Respeita a agenda do profissional.
+- **Atender Demanda (com folga):** Tenta atender toda a demanda prevista, registrando o que não foi possível como "folga" com penalidades associadas.
+- **Disponibilidade Profissional:** Respeita a agenda e a carga horária máxima dos profissionais.
 - **Carga Horária Máxima e Equilíbrio:** Limita a carga horária e busca equilibrar a atividade entre os profissionais.
 - **Capacidade das Salas:** O total de atendimentos por sala não excede sua capacidade.
 
 Resultados do Modelo 2:
-- Status: Ótima (Optimal)
-- Custo Total (Minimizado): 295.9 (demonstra que o modelo está agendando atendimentos de alta prioridade e minimizando penalidades)
-- Total de Atendimentos Agendados: 82 (de uma demanda total de 107)
-- Demandas Não Atendidas (Folga): 25 (identificadas especificamente onde a capacidade não foi suficiente ou prioridades direcionaram recursos).
+- **Status:** Ótimo (Optimal)
+- **Custo Total (Minimizado):** -440.1 (um valor menor indica melhor desempenho, maximizando atendimentos ponderados e minimizando penalidades por folga e desequilíbrio de carga).
+- **Atendimentos Alocados:** O modelo aloca eficientemente diversos tipos de atendimentos por profissional e turno, demonstrando a capacidade de gerenciar uma variedade de demandas e prioridades.
+- **Demandas Não Atendidas (Folga):** Existem algumas demandas não atendidas, o que é esperado em um cenário com recursos limitados. O modelo as penaliza de forma a priorizar as mais importantes, permitindo identificar gargalos.
 
-5. DEPENDÊNCIAS DO PROJETO
+5. MODELO 3: SOLUÇÃO ALEATÓRIA (`solucao_aleatoria.py`)
+
+Este modelo serve como uma linha de base para comparação, implementando uma alocação com significativa aleatoriedade, sem as otimizações da programação linear.
+
+Resultados do Modelo 3 (versão verdadeiramente aleatória):
+- **Weighted Total Demand Attended (Atendimentos Ponderados Atendidos):** 176.71 (inferior ao modelo otimizado de agendamento psicológico, com variação a cada execução).
+- **Total de Atendimentos Alocados:** 84 (significativamente menor que a capacidade dos modelos otimizados).
+- **Carga Máxima Individual (para equilíbrio):** 20 horas (entretanto, a distribuição geral da carga de trabalho entre os profissionais é menos equilibrada, com variações de 8 a 20 horas).
+- **Custo Total (comparável ao objetivo do modelo otimizado):** -119.71 (consideravelmente mais alto que o modelo de escalonamento, indicando uma solução menos eficiente em termos de custo/benefício e maior penalidade por folga e desequilíbrio).
+- **Demandas Não Atendidas (Folga):** A solução aleatória apresenta um número maior e menos estruturado de demandas não atendidas, refletindo a falta de otimização.
+
+6. DEPENDÊNCIAS DO PROJETO
 Para executar os códigos Python, as seguintes bibliotecas devem ser instaladas:
 - `pulp==2.7.0`
 - `pandas==2.2.0`
 
 Para instalar: `pip install -r requirements.txt`
 
-6. COMO EXECUTAR OS MODELOS
+7. COMO EXECUTAR OS MODELOS
 - Para o Modelo 1 (`agendamento_psicologico.py`): `python agendamento_psicologico.py`
 - Para o Modelo 2 (`modelo_escalonamento.py`): `python modelo_escalonamento.py`
+- Para o Modelo 3 (`solucao_aleatoria.py`): `python solucao_aleatoria.py`
 
-7. CONCLUSÃO
-Os modelos de Programação Linear são ferramentas poderosas para otimizar o agendamento, promovendo eficiência operacional e justiça na alocação de recursos. O Modelo 2, mais avançado, fornece insights valiosos sobre a capacidade real do sistema e onde os gargalos podem ocorrer, permitindo decisões estratégicas para o projeto "Cuidar Bem". 
+8. CONCLUSÃO
+Os modelos de Programação Linear, **Modelo de Escalonamento Avançado** e **Modelo de Agendamento Psicológico**, quando utilizados em conjunto, formam uma solução poderosa e eficiente para otimizar o agendamento de atendimentos. O **Modelo de Escalonamento** fornece uma estrutura abrangente para minimização de custos e gestão de prioridades, enquanto o **Modelo de Agendamento Psicológico** refina a alocação de consultas psicológicas, garantindo um excelente balanceamento da carga de trabalho.
+
+A **Solução Aleatória** serve como uma linha de base crucial, demonstrando claramente o valor da programação linear ao mostrar que uma abordagem não otimizada resulta em um desempenho inferior em termos de atendimentos realizados, equilíbrio de carga e custo-benefício. Essa comparação ressalta a importância das técnicas de otimização para a eficiência operacional e a justiça na alocação de recursos no projeto "Cuidar Bem".
+
+## 👥 Equipe
+- **Joberth Emanoel da Conceição Mateo Castro** - [GitHub](https://github.com/JoberthCastro) | [LinkedIn](https://www.linkedin.com/in/joberth-castro-013840252)  
+- **Maria Clara Cutrim Nunes Costa** - [LinkedIn](https://www.linkedin.com/in/maria-clara-cutrim-nunes-costa-55b7a8248/)  
+- **Wesley Silva Gomes** - [GitHub](https://github.com/WesDevss) | [LinkedIn](https://www.linkedin.com/in/wesley-silva-gomes-9bb195259/)
+- **Anderson Felipe Silva Aires** - [LinkedIn](https://www.linkedin.com/in/anderson-aires-b23720230/) 
