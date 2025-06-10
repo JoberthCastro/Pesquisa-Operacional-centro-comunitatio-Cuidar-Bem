@@ -6,82 +6,148 @@ profissionais_df = pd.read_csv('profissionais.csv')
 salas_df = pd.read_csv('salas.csv')
 demandas_df = pd.read_csv('demandas.csv')
 
+# Duração padrão de um atendimento em horas
+duracao_atendimento = 1
+
+# Número máximo de atendimentos que um profissional pode realizar em um único turno
+MAX_ATENDIMENTOS_POR_TURNO_PROF = 4
+
+# Pesos de prioridade para tipos de atendimento (ajustados para dar mais ênfase às prioridades)
+pesos = {'urgência': 5, 'triagem': 3, 'rotina': 1}
+
 # Criar o problema
 prob = LpProblem("Agendamento_Psicologico", LpMaximize)
 
 # Dados do problema
 psicologos = profissionais_df[profissionais_df['especialidade'] == 'Psicólogo']['id_profissional'].tolist()
-salas = salas_df['id_sala'].tolist()
-dias = ['seg', 'ter', 'qua', 'qui', 'sex', 'sab']
+datas_unicas = demandas_df['data'].unique().tolist()
 turnos = ['manhã', 'tarde']
+salas = salas_df['id_sala'].tolist()
 
 # Variáveis de decisão
-# x[profissional, sala, dia, turno] = 1 se o profissional atende na sala no dia e turno
 x = LpVariable.dicts("atendimento",
-                     ((p, s, d, t) for p in psicologos 
-                      for s in salas 
-                      for d in dias 
-                      for t in turnos),
-                     cat='Binary')
+                     ((p, data, t, ta) for p in psicologos 
+                      for data in datas_unicas
+                      for t in turnos
+                      for ta in demandas_df['tipo_atendimento'].unique()),
+                     lowBound=0, cat='Integer')
 
-# Função objetivo: Maximizar o número total de atendimentos
-prob += lpSum(x[p, s, d, t] for p in psicologos for s in salas for d in dias for t in turnos)
+# Variável de decisão para atendimentos realizados
+atendimento_realizado = LpVariable.dicts(
+    "AtendimentoRealizado",
+    ((row['data'], row['turno'], row['tipo_atendimento'])
+     for _, row in demandas_df.iterrows()),
+    lowBound=0, cat='Integer'
+)
 
-# Restrição 1: Cada profissional só pode atender em uma sala por turno
+# Nova variável para controlar o desbalanceamento da carga horária
+desbalanceamento = LpVariable("Desbalanceamento", lowBound=0)
+
+# Função objetivo: Maximizar a soma ponderada dos atendimentos realizados e minimizar o desbalanceamento
+prob += lpSum(atendimento_realizado[(row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
+              for _, row in demandas_df.iterrows()) - 10 * desbalanceamento
+
+# Restrição 1: Cada profissional só pode atender em no máximo um tipo de atendimento por turno
 for p in psicologos:
-    for d in dias:
+    for data in datas_unicas:
         for t in turnos:
-            # Verificar disponibilidade do profissional
-            disponibilidade = profissionais_df[profissionais_df['id_profissional'] == p][f'disponibilidade_{d}'].iloc[0]
-            if pd.notna(disponibilidade) and t in disponibilidade.split(','):
-                prob += lpSum(x[p, s, d, t] for s in salas) <= 1
+            dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
+            disponibilidade_prof = profissionais_df[profissionais_df['id_profissional'] == p][f'disponibilidade_{dia_semana_atual}'].iloc[0]
+            if pd.isna(disponibilidade_prof) or t not in disponibilidade_prof.split(','):
+                for ta_inner in demandas_df['tipo_atendimento'].unique():
+                    prob += x[p, data, t, ta_inner] == 0, f"IndisponibilidadeProf_{p}_{data}_{t}_{ta_inner}"
+            else:
+                prob += lpSum(x[p, data, t, ta_inner] for ta_inner in demandas_df['tipo_atendimento'].unique()) <= MAX_ATENDIMENTOS_POR_TURNO_PROF, f"MaxAtendimentosTurno_{p}_{data}_{t}"
 
-# Restrição 2: Cada sala só pode ser utilizada por um profissional por turno
-for s in salas:
-    for d in dias:
-        for t in turnos:
-            # Verificar disponibilidade da sala
-            dias_func = salas_df[salas_df['id_sala'] == s]['dias_funcionamento'].iloc[0].split(',')
-            turnos_disp = salas_df[salas_df['id_sala'] == s]['turnos_disponiveis'].iloc[0].split(',')
-            if d in dias_func and t in turnos_disp:
-                prob += lpSum(x[p, s, d, t] for p in psicologos) <= 1
-
-# Restrição 3: Respeitar a demanda prevista
-for d in dias:
+# Restrição 2: Capacidade total das salas por turno
+for data in datas_unicas:
     for t in turnos:
-        demanda = demandas_df[(demandas_df['dia_semana'] == d) & 
-                            (demandas_df['turno'] == t)]['quantidade_prevista'].sum()
-        if demanda > 0:
-            prob += lpSum(x[p, s, d, t] for p in psicologos for s in salas) <= demanda
+        dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
+        capacidade_total_salas = salas_df[salas_df['dias_funcionamento'].apply(lambda x: dia_semana_atual in x.split(',')) & 
+                                          salas_df['turnos_disponiveis'].apply(lambda x: t in x.split(','))]['capacidade'].sum()
+        
+        prob += lpSum(x[p, data, t, ta] 
+                      for p in psicologos 
+                      for ta in demandas_df['tipo_atendimento'].unique()) <= capacidade_total_salas, f"CapacidadeTotalSalas_{data}_{t}"
 
-# Restrição 4: Balancear a distribuição de atendimentos entre as salas
-# Calcula o número total de atendimentos possíveis
-total_atendimentos = len(dias) * len(turnos) * len(psicologos)
-# Define o limite máximo de atendimentos por sala (média + 20%)
-limite_por_sala = int((total_atendimentos / len(salas)) * 1.2)
+# Restrição 3: Respeitar a carga horária máxima de cada profissional
+for p in psicologos:
+    total_horas_prof = lpSum(x[p, data_inner_carga, t_inner_carga, ta_inner_carga] * duracao_atendimento
+                             for data_inner_carga in datas_unicas
+                             for t_inner_carga in turnos
+                             for ta_inner_carga in demandas_df['tipo_atendimento'].unique())
+    max_carga = profissionais_df[profissionais_df['id_profissional'] == p]['carga_horaria_max'].iloc[0]
+    prob += total_horas_prof <= max_carga, f"CargaHorariaMax_{p}"
 
-for s in salas:
-    prob += lpSum(x[p, s, d, t] for p in psicologos for d in dias for t in turnos) <= limite_por_sala
+# Nova restrição: Controlar o desbalanceamento da carga horária
+carga_media = lpSum(x[p, data, t, ta] * duracao_atendimento
+                    for p in psicologos
+                    for data in datas_unicas
+                    for t in turnos
+                    for ta in demandas_df['tipo_atendimento'].unique()) / len(psicologos)
+
+for p in psicologos:
+    total_horas_prof = lpSum(x[p, data, t, ta] * duracao_atendimento
+                            for data in datas_unicas
+                            for t in turnos
+                            for ta in demandas_df['tipo_atendimento'].unique())
+    prob += total_horas_prof - carga_media <= desbalanceamento, f"DesbalanceamentoPos_{p}"
+    prob += carga_media - total_horas_prof <= desbalanceamento, f"DesbalanceamentoNeg_{p}"
+
+# Restrição 4: atendimento_realizado não pode exceder a quantidade prevista da demanda
+for _, demanda_row in demandas_df.iterrows():
+    data_demanda = demanda_row['data']
+    turno_demanda = demanda_row['turno']
+    tipo_atendimento_demanda = demanda_row['tipo_atendimento']
+    quantidade_prevista_demanda = demanda_row['quantidade_prevista']
+
+    prob += atendimento_realizado[(data_demanda, turno_demanda, tipo_atendimento_demanda)] <= quantidade_prevista_demanda
+
+    prob += lpSum(x[(p, data_demanda, turno_demanda, tipo_atendimento_demanda)]
+                  for p in psicologos) == atendimento_realizado[(data_demanda, turno_demanda, tipo_atendimento_demanda)]
 
 # Resolver o problema
 prob.solve()
 
 # Imprimir resultados
 print(f"Status: {LpStatus[prob.status]}")
-print(f"Total de atendimentos: {value(prob.objective)}")
+print(f"Total de atendimentos ponderados: {value(prob.objective)}")
 
 # Imprimir agendamento
 print("\nAgendamento:")
 for p in psicologos:
-    for s in salas:
-        for d in dias:
-            for t in turnos:
-                if value(x[p, s, d, t]) == 1:
+    for data in datas_unicas:
+        for t in turnos:
+            for ta in demandas_df['tipo_atendimento'].unique():
+                if value(x[p, data, t, ta]) == 1:
                     nome_prof = profissionais_df[profissionais_df['id_profissional'] == p]['nome'].iloc[0]
-                    print(f"Profissional {nome_prof} (ID: {p}) atenderá na Sala {s} no {d} à {t}")
+                    print(f"Profissional {nome_prof} (ID: {p}) atenderá no {data} à {t} - Tipo: {ta}")
+
+# Imprimir estatísticas de atendimentos por tipo de atendimento
+print("\nEstatísticas por Tipo de Atendimento (Demanda Atendida):")
+for (data, turno, tipo), quantidade in atendimento_realizado.items():
+    if value(quantidade) > 0:
+        print(f"  Data: {data}, Turno: {turno}, Tipo: {tipo}, Atendimentos: {value(quantidade)}")
+
+# Imprimir estatísticas por profissional (carga horária)
+print("\nCarga horária por Profissional:")
+for p in psicologos:
+    total_horas_prof = sum(value(x[p, data, t, ta]) * duracao_atendimento
+                           for data in datas_unicas
+                           for t in turnos
+                           for ta in demandas_df['tipo_atendimento'].unique())
+    nome_prof = profissionais_df[profissionais_df['id_profissional'] == p]['nome'].iloc[0]
+    print(f"  Profissional {nome_prof} (ID: {p}): {total_horas_prof} horas")
 
 # Imprimir estatísticas por sala
-print("\nEstatísticas por Sala:")
-for s in salas:
-    total_sala = sum(value(x[p, s, d, t]) for p in psicologos for d in dias for t in turnos)
-    print(f"Sala {s}: {total_sala} atendimentos") 
+print("\nCapacidade de Salas Utilizada (por Data e Turno):")
+for data in datas_unicas:
+    for t in turnos:
+        dia_semana_atual = demandas_df[demandas_df['data'] == data]['dia_semana'].iloc[0]
+        capacidade_total_salas = salas_df[salas_df['dias_funcionamento'].apply(lambda x: dia_semana_atual in x.split(',')) & 
+                                          salas_df['turnos_disponiveis'].apply(lambda x: t in x.split(','))]['capacidade'].sum()
+        
+        atendimentos_neste_slot = sum(value(x[p, data, t, ta]) 
+                                     for p in psicologos 
+                                     for ta in demandas_df['tipo_atendimento'].unique())
+        print(f"  {data} {t}: Capacidade Total de Salas = {capacidade_total_salas}, Atendimentos Alocados = {atendimentos_neste_slot}") 

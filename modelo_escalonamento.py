@@ -44,10 +44,10 @@ model = LpProblem("Escalonamento_Cuidar_Bem", LpMinimize)
 
 # Função objetivo: minimizar tempo de espera ponderado, folgas e equilibrar carga de trabalho
 model += (
-    -lpSum(x[(p, row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
+    -3 * lpSum(x[(p, row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
            for p in profissionais['id_profissional']
            for _, row in demandas.iterrows()) # Agora este termo é um 'benefício' (negativo na minimização)
-    + 10 * lpSum(folga[(row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
+    + 2 * lpSum(folga[(row['data'], row['turno'], row['tipo_atendimento'])] * pesos[row['tipo_atendimento']]
           for _, row in demandas.iterrows())  # penalidade alta para demanda não atendida
     + 0.1 * max_carga  # Peso para equilíbrio de carga
 )
